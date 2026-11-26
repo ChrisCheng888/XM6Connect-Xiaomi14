@@ -1,0 +1,48 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Deep Obsidian-Sapphire Studio Base -->
+    <path android:pathData="M0,0h108v108h-108z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="14"
+                android:startY="6"
+                android:endX="98"
+                android:endY="104"
+                android:type="linear">
+                <item android:offset="0" android:color="#222D45" />
+                <item android:offset="0.48" android:color="#111724" />
+                <item android:offset="1" android:color="#080B12" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Soft Studio Radial Glow Behind Emblem -->
+    <path android:pathData="M54,54m-48,0a48,48 0,1 1,96 0a48,48 0,1 1,-96 0">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:centerX="54"
+                android:centerY="46"
+                android:gradientRadius="46"
+                android:type="radial">
+                <item android:offset="0" android:color="#4A5B8CE8" />
+                <item android:offset="0.55" android:color="#1A3B68BD" />
+                <item android:offset="1" android:color="#00080B12" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Subtle Precision Acoustic Rings -->
+    <path
+        android:pathData="M54,55m-36,0a36,36 0,1 1,72 0a36,36 0,1 1,-72 0"
+        android:strokeWidth="0.75"
+        android:strokeColor="#1FFFFFFF" />
+    <path
+        android:pathData="M54,55m-27,0a27,27 0,1 1,54 0a27,27 0,1 1,-54 0"
+        android:strokeWidth="0.6"
+        android:strokeColor="#14FFFFFF" />
+</vector>

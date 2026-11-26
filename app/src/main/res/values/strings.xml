@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">XM6 Connect</string>
+    <string name="tile_anc_label">XM6 降噪</string>
+    <string name="widget_label">XM6 快捷控制</string>
+    <string name="widget_description">快速查看 WH-1000XM6 电量、LDAC 并一键切换降噪模式</string>
+</resources>
