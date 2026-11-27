@@ -126,6 +126,7 @@ class HeadphoneRepository(
                 sendInternal(Xm6ProtocolV2.buildGetBattery())
                 sendInternal(Xm6ProtocolV2.buildGetNoiseControl())
                 sendInternal(Xm6ProtocolV2.buildGetWearingStatus())
+                sendInternal(Xm6ProtocolV2.buildGetMultipointDevices())
                 val sysCodec = shizukuManager.querySystemCodecSummary(systemDevice.address)
                 if (!sysCodec.isNullOrBlank() && !sysCodec.startsWith("ERR:")) {
                     _state.update { it.copy(systemCodecSummary = sysCodec) }
@@ -616,17 +617,33 @@ class HeadphoneRepository(
     fun switchMultipointPeer(mac: String) {
         _state.update { st ->
             st.copy(
-                connectedPeers = st.connectedPeers.map { it.copy(isActivePlayback = it.mac == mac) }
+                pairedPeers = st.pairedPeers.map {
+                    it.copy(isActivePlayback = it.isConnected && it.mac.equals(mac, ignoreCase = true))
+                }
             )
         }
-        scope.launch { sendInternal(Xm6ProtocolV2.buildSwitchMultipointDevice(mac)) }
+        scope.launch {
+            sendInternal(Xm6ProtocolV2.buildSwitchMultipointDevice(mac))
+            delay(650L)
+            sendInternal(Xm6ProtocolV2.buildGetMultipointDevices())
+        }
     }
 
     fun disconnectMultipointPeer(mac: String) {
         _state.update { st ->
-            st.copy(connectedPeers = st.connectedPeers.filterNot { it.mac == mac })
+            st.copy(
+                pairedPeers = st.pairedPeers.map {
+                    if (it.mac.equals(mac, ignoreCase = true)) {
+                        it.copy(isConnected = false, isActivePlayback = false)
+                    } else it
+                }
+            )
         }
-        scope.launch { sendInternal(Xm6ProtocolV2.buildDisconnectMultipointDevice(mac)) }
+        scope.launch {
+            sendInternal(Xm6ProtocolV2.buildDisconnectMultipointDevice(mac))
+            delay(650L)
+            sendInternal(Xm6ProtocolV2.buildGetMultipointDevices())
+        }
     }
 
     suspend fun applyShizukuLdac(mode: LdacBitrateMode): String {
@@ -748,7 +765,7 @@ class HeadphoneRepository(
                 is Xm6Event.AutoPowerOffUpdate -> s.copy(autoPowerOff = event.option)
                 is Xm6Event.NcButtonCycleUpdate -> s.copy(ncAmbButtonCycle = event.cycle)
                 is Xm6Event.MultipointEnabledUpdate -> s.copy(multipointEnabled = event.enabled)
-                is Xm6Event.MultipointDevicesUpdate -> s.copy(connectedPeers = event.devices)
+                is Xm6Event.MultipointDevicesUpdate -> s.copy(pairedPeers = event.devices)
                 is Xm6Event.CinemaModeUpdate -> {
                     cinemaModeEnabled = event.enabled
                     val resolved = when {

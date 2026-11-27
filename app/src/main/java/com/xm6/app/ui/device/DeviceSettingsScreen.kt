@@ -2,6 +2,7 @@ package com.xm6.app.ui.device
 
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothDevice
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
@@ -32,6 +33,7 @@ import androidx.compose.material.icons.rounded.Laptop
 import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Smartphone
+import androidx.compose.material.icons.rounded.Tablet
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -40,6 +42,9 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -91,10 +96,14 @@ fun DeviceSettingsScreen(
             modifier = Modifier.padding(horizontal = 4.dp)
         )
 
-        // 1. Multipoint Card
+        // 1. Multipoint Card (Live Connected Devices Primary + Collapsible Paired History)
+        var showPairedHistory by remember { mutableStateOf(false) }
+        val liveConnected = state.connectedPeers
+        val offlinePaired = state.disconnectedPairedPeers
+
         ExpressiveCard {
             Column(
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier.padding(16.dp)
             ) {
                 Row(
@@ -102,37 +111,104 @@ fun DeviceSettingsScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("多点连接", fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text("多点连接", fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
+                        if (state.isConnected) {
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
+                            ) {
+                                Text(
+                                    text = "已连 ${liveConnected.size}/2",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                )
+                            }
+                        }
+                    }
                     Switch(
                         checked = state.multipointEnabled,
                         onCheckedChange = onToggleMultipoint
                     )
                 }
 
-                if (state.multipointEnabled) {
-                    if (state.connectedPeers.isEmpty()) {
+                if (!state.isConnected) {
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant
+                    ) {
+                        Text(
+                            text = "耳机连接后显示实时在线设备",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 11.dp)
+                        )
+                    }
+                } else {
+                    if (liveConnected.isEmpty()) {
                         Surface(
-                            shape = RoundedCornerShape(18.dp),
+                            shape = RoundedCornerShape(16.dp),
                             color = MaterialTheme.colorScheme.surfaceVariant
                         ) {
                             Text(
-                                text = if (state.isConnected) "当前连接 1 台设备" else "连接耳机后显示多点设备",
+                                text = "当前仅连接本机",
                                 fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 14.dp, vertical = 12.dp)
+                                    .padding(horizontal = 14.dp, vertical = 11.dp)
                             )
                         }
                     } else {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            state.connectedPeers.forEach { peer ->
+                            liveConnected.forEach { peer ->
                                 PeerDeviceRow(
                                     peer = peer,
-                                    canDisconnect = state.connectedPeers.size > 1,
+                                    canDisconnect = liveConnected.size > 1,
                                     onSwitch = { onSwitchPeer(peer.mac) },
                                     onDisconnect = { onDisconnectPeer(peer.mac) }
                                 )
+                            }
+                        }
+                    }
+
+                    // Collapsible offline paired-history drawer (keeps primary focus on live connections)
+                    if (offlinePaired.isNotEmpty()) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable { showPairedHistory = !showPairedHistory }
+                                .padding(horizontal = 4.dp, vertical = 4.dp)
+                        ) {
+                            Text(
+                                text = "已配对历史 (${offlinePaired.size})",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = if (showPairedHistory) "收起" else "展开 ›",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+
+                        AnimatedVisibility(visible = showPairedHistory) {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                offlinePaired.forEach { peer ->
+                                    OfflinePairedPeerRow(peer = peer)
+                                }
                             }
                         }
                     }
@@ -419,10 +495,7 @@ private fun PeerDeviceRow(
     onSwitch: () -> Unit,
     onDisconnect: () -> Unit
 ) {
-    val isLaptop = peer.name.contains("Mac", true) ||
-        peer.name.contains("PC", true) ||
-        peer.name.contains("Book", true) ||
-        peer.name.contains("Windows", true)
+    val icon = resolvePeerIcon(peer.name)
     val bgBrush = Brush.linearGradient(
         colors = listOf(
             MaterialTheme.colorScheme.primaryContainer,
@@ -435,7 +508,7 @@ private fun PeerDeviceRow(
         horizontalArrangement = Arrangement.SpaceBetween,
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(20.dp))
+            .clip(RoundedCornerShape(18.dp))
             .then(
                 if (peer.isActivePlayback) Modifier.background(bgBrush)
                 else Modifier.background(MaterialTheme.colorScheme.surfaceVariant)
@@ -458,22 +531,42 @@ private fun PeerDeviceRow(
                     )
             ) {
                 Icon(
-                    imageVector = if (isLaptop) Icons.Rounded.Laptop else Icons.Rounded.Smartphone,
+                    imageVector = icon,
                     contentDescription = null,
                     tint = if (peer.isActivePlayback) MaterialTheme.colorScheme.onPrimary
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    else MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(17.dp)
                 )
             }
-            Text(
-                text = peer.name,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.ExtraBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                color = if (peer.isActivePlayback) MaterialTheme.colorScheme.onPrimaryContainer
-                else MaterialTheme.colorScheme.onSurface
-            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = peer.name,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = if (peer.isActivePlayback) MaterialTheme.colorScheme.onPrimaryContainer
+                    else MaterialTheme.colorScheme.onSurface
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFF10B981))
+                    )
+                    Text(
+                        text = if (peer.isActivePlayback) "已连接 · 播放中" else "已连接 · 待机",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (peer.isActivePlayback) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                        else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
         }
 
         Spacer(modifier = Modifier.width(8.dp))
@@ -482,14 +575,7 @@ private fun PeerDeviceRow(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            if (peer.isActivePlayback) {
-                Text(
-                    text = "播放中",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            } else {
+            if (!peer.isActivePlayback) {
                 Surface(
                     shape = CircleShape,
                     color = MaterialTheme.colorScheme.primary,
@@ -526,6 +612,56 @@ private fun PeerDeviceRow(
             }
         }
     }
+}
+
+@Composable
+private fun OfflinePairedPeerRow(peer: ConnectedPeerDevice) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f))
+            .padding(horizontal = 12.dp, vertical = 9.dp)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.weight(1f)
+        ) {
+            Icon(
+                imageVector = resolvePeerIcon(peer.name),
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                modifier = Modifier.size(17.dp)
+            )
+            Text(
+                text = peer.name,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Text(
+            text = "未连接",
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f)
+        )
+    }
+}
+
+private fun resolvePeerIcon(name: String) = when {
+    name.contains("Pad", true) || name.contains("Tab", true) -> Icons.Rounded.Tablet
+    name.contains("Mac", true) ||
+        name.contains("PC", true) ||
+        name.contains("Book", true) ||
+        name.contains("Lapto", true) ||
+        name.contains("Windows", true) -> Icons.Rounded.Laptop
+    else -> Icons.Rounded.Smartphone
 }
 
 @Composable

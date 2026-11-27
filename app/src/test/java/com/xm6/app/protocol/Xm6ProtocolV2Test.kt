@@ -203,19 +203,39 @@ class Xm6ProtocolV2Test {
         val mac1 = "AA:14:98:21:0F:C1".toByteArray(Charsets.US_ASCII)
         val name1 = "Xiaomi 14".toByteArray(Charsets.UTF_8)
         val mac2 = "7C:D1:C3:88:4B:12".toByteArray(Charsets.US_ASCII)
-        val name2 = "MacBook Pro".toByteArray(Charsets.UTF_8)
+        val name2 = "Xiaomi Pad".toByteArray(Charsets.UTF_8)
+        val mac3 = "A0:59:50:B5:29:20".toByteArray(Charsets.US_ASCII)
+        val name3 = "Laptop".toByteArray(Charsets.UTF_8)
 
-        val payload = byteArrayOf(Xm6ProtocolV2.CMD_T2_PERI_RET_PARAM, 0x00, 0x02) +
+        // 3 paired devices: Dev1 connected (0x01) + active playback (trailing 0x01), Dev2 & Dev3 offline (0x00)
+        val payload = byteArrayOf(Xm6ProtocolV2.CMD_T2_PERI_RET_PARAM, 0x00, 0x03) +
             mac1 + byteArrayOf(0x01, name1.size.toByte()) + name1 +
-            mac2 + byteArrayOf(0x00, name2.size.toByte()) + name2
+            mac2 + byteArrayOf(0x00, name2.size.toByte()) + name2 +
+            mac3 + byteArrayOf(0x00, name3.size.toByte()) + name3 +
+            byteArrayOf(0x01)
 
         val event = Xm6ProtocolV2.decodeFrame(MdrFrame(MdrDataType.DATA_MDR_NO2, 0, payload))
         assertTrue(event is Xm6Event.MultipointDevicesUpdate)
         val devices = (event as Xm6Event.MultipointDevicesUpdate).devices
-        assertEquals(2, devices.size)
+        assertEquals(3, devices.size)
         assertEquals("Xiaomi 14", devices[0].name)
+        assertTrue(devices[0].isConnected)
         assertTrue(devices[0].isActivePlayback)
-        assertEquals("MacBook Pro", devices[1].name)
+        assertEquals("Xiaomi Pad", devices[1].name)
+        assertEquals(false, devices[1].isConnected)
+        assertEquals(false, devices[1].isActivePlayback)
+        assertEquals(false, devices[2].isConnected)
+
+        // 2 connected devices with Dev2 active playback (trailing 0x02)
+        val dualPayload = byteArrayOf(Xm6ProtocolV2.CMD_T2_PERI_NTFY_PARAM, 0x00, 0x02) +
+            mac1 + byteArrayOf(0x01, name1.size.toByte()) + name1 +
+            mac2 + byteArrayOf(0x01, name2.size.toByte()) + name2 +
+            byteArrayOf(0x02)
+        val dualDevices = (Xm6ProtocolV2.decodeFrame(MdrFrame(MdrDataType.DATA_MDR_NO2, 0, dualPayload)) as Xm6Event.MultipointDevicesUpdate).devices
+        assertTrue(dualDevices[0].isConnected)
+        assertEquals(false, dualDevices[0].isActivePlayback)
+        assertTrue(dualDevices[1].isConnected)
+        assertTrue(dualDevices[1].isActivePlayback)
 
         // Verified LIVE WH-1000XM6 Atomic Single-Frame Listening Mode transitions (zero Standard gap!)
         val cinToStd = Xm6ProtocolV2.buildSetListeningModeCommands(

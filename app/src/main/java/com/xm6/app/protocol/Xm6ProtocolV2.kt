@@ -866,22 +866,41 @@ object Xm6ProtocolV2 {
 
             CMD_T2_PERI_RET_PARAM, CMD_T2_PERI_NTFY_PARAM -> {
                 when {
+                    // Verified LIVE on WH-1000XM6 FW 3.1.5 (37 00 / 39 00):
+                    // [cmd, 0x00, count, (mac17, connStatus(0=offline,1=connected), nameLen, nameUtf8) * count, activePlaybackIdx(1-based)]
                     p.size >= 3 && p[1] == PERI_TYPE_CONNECTED_DEVICES -> {
                         val count = p[2].toInt() and 0xFF
                         var offset = 3
-                        val devices = mutableListOf<ConnectedPeerDevice>()
+                        val rawEntries = mutableListOf<Triple<String, Int, String>>()
                         repeat(count) {
                             if (offset + 19 <= p.size) {
                                 val mac = String(p, offset, 17, Charsets.US_ASCII)
                                 offset += 17
-                                val isActive = (p[offset++].toInt() and 0xFF) != 0
+                                val connStatus = p[offset++].toInt() and 0xFF
                                 val nameLen = p[offset++].toInt() and 0xFF
                                 if (offset + nameLen <= p.size) {
                                     val name = String(p, offset, nameLen, Charsets.UTF_8)
                                     offset += nameLen
-                                    devices.add(ConnectedPeerDevice(mac = mac, name = name, isActivePlayback = isActive))
+                                    rawEntries.add(Triple(mac, connStatus, name))
                                 }
                             }
+                        }
+                        val activePlaybackIdx = if (offset < p.size) (p[offset].toInt() and 0xFF) else 0
+                        val connectedCount = rawEntries.count { it.second != 0 }
+                        val devices = rawEntries.mapIndexed { idx, (mac, connStatus, name) ->
+                            val isPeerConnected = connStatus != 0
+                            val isActive = isPeerConnected && when {
+                                activePlaybackIdx in 1..rawEntries.size -> (idx == activePlaybackIdx - 1)
+                                connStatus >= 2 -> true
+                                connectedCount == 1 -> true
+                                else -> false
+                            }
+                            ConnectedPeerDevice(
+                                mac = mac,
+                                name = name,
+                                isConnected = isPeerConnected,
+                                isActivePlayback = isActive
+                            )
                         }
                         Xm6Event.MultipointDevicesUpdate(devices)
                     }

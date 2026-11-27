@@ -92,7 +92,8 @@ data class EqPreset(
 data class ConnectedPeerDevice(
     val mac: String,
     val name: String,
-    val isActivePlayback: Boolean
+    val isConnected: Boolean = true,
+    val isActivePlayback: Boolean = false
 )
 
 enum class ShizukuStatus(val label: String) {
@@ -136,7 +137,7 @@ data class HeadphoneState(
     val autoPowerOff: AutoPowerOffOption = AutoPowerOffOption.WHEN_TAKEN_OFF,
     val ncAmbButtonCycle: NcAmbButtonCycle = NcAmbButtonCycle.NC_AND_AMBIENT,
     val multipointEnabled: Boolean = true,
-    val connectedPeers: List<ConnectedPeerDevice> = emptyList(),
+    val pairedPeers: List<ConnectedPeerDevice> = emptyList(),
     val activeEqPresetId: String = "custom_1",
     val eqBands10: List<Int> = List(10) { 0 },
     val table1Capabilities: Set<Int> = emptySet(),
@@ -146,6 +147,14 @@ data class HeadphoneState(
 ) {
     val isConnected: Boolean
         get() = connectionState == ConnectionState.CONNECTED
+
+    /** Only devices currently actively connected to the WH-1000XM6 (flag != 0 in T2 37/39 00). */
+    val connectedPeers: List<ConnectedPeerDevice>
+        get() = pairedPeers.filter { it.isConnected }
+
+    /** Previously paired devices stored in the headset that are currently disconnected. */
+    val disconnectedPairedPeers: List<ConnectedPeerDevice>
+        get() = pairedPeers.filterNot { it.isConnected }
 
     val displayState: HeadphoneDisplayState
         get() = when {
