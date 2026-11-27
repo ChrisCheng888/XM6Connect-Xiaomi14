@@ -9,6 +9,12 @@ enum class ConnectionState {
     ERROR
 }
 
+enum class HeadphoneDisplayState(val label: String) {
+    DISCONNECTED("未连接"),
+    NOT_WORN("未佩戴"),
+    WEARING("已连接")
+}
+
 enum class AudioCodec(val label: String) {
     LDAC("LDAC"),
     AAC("AAC"),
@@ -126,6 +132,7 @@ data class HeadphoneState(
     val speakToChatTimeout: SpeakToChatTimeout = SpeakToChatTimeout.STANDARD_15S,
     val touchSensor: Boolean = true,
     val pauseWhenTakenOff: Boolean = true,
+    val isWorn: Boolean = true,
     val autoPowerOff: AutoPowerOffOption = AutoPowerOffOption.WHEN_TAKEN_OFF,
     val ncAmbButtonCycle: NcAmbButtonCycle = NcAmbButtonCycle.NC_AND_AMBIENT,
     val multipointEnabled: Boolean = true,
@@ -139,6 +146,13 @@ data class HeadphoneState(
 ) {
     val isConnected: Boolean
         get() = connectionState == ConnectionState.CONNECTED
+
+    val displayState: HeadphoneDisplayState
+        get() = when {
+            !isConnected -> HeadphoneDisplayState.DISCONNECTED
+            !isWorn -> HeadphoneDisplayState.NOT_WORN
+            else -> HeadphoneDisplayState.WEARING
+        }
 
     val isLeAudioConflict: Boolean
         get() = connectionQuality == ConnectionQualityMode.LE_AUDIO_LOW_LATENCY ||

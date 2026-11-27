@@ -157,6 +157,36 @@ class Xm6ProtocolV2Test {
         ) as Xm6Event.TouchSensorUpdate
         assertTrue(touchEvent.enabled)
 
+        // Verified LIVE WH-1000XM6 Wearing Status:
+        // - GET reply (3 bytes): F2 10 -> F3 10 [00=WORN, 01=NOT_WORN]
+        // - NTFY push (4 bytes): F5 10 01 [00=WORN, 01=NOT_WORN]
+        val wearQuery = Xm6ProtocolV2.buildGetWearingStatus()
+        assertTrue(wearQuery.payload.contentEquals(byteArrayOf(0xF2.toByte(), 0x10)))
+        val retNotWorn = Xm6ProtocolV2.decodeFrame(
+            MdrFrame(MdrDataType.DATA_MDR, 0, byteArrayOf(0xF3.toByte(), 0x10, 0x01))
+        ) as Xm6Event.WearingStatusUpdate
+        assertEquals(false, retNotWorn.isWorn)
+        val retWorn = Xm6ProtocolV2.decodeFrame(
+            MdrFrame(MdrDataType.DATA_MDR, 0, byteArrayOf(0xF3.toByte(), 0x10, 0x00))
+        ) as Xm6Event.WearingStatusUpdate
+        assertTrue(retWorn.isWorn)
+        val notWornEvent = Xm6ProtocolV2.decodeFrame(
+            MdrFrame(MdrDataType.DATA_MDR, 0, byteArrayOf(0xF5.toByte(), 0x10, 0x01, 0x01))
+        ) as Xm6Event.WearingStatusUpdate
+        assertEquals(false, notWornEvent.isWorn)
+        val wornEvent = Xm6ProtocolV2.decodeFrame(
+            MdrFrame(MdrDataType.DATA_MDR, 0, byteArrayOf(0xF5.toByte(), 0x10, 0x01, 0x00))
+        ) as Xm6Event.WearingStatusUpdate
+        assertTrue(wornEvent.isWorn)
+
+        // Verified LIVE WH-1000XM6 off-head paused NCASM notification (69 19 00 00 01 01 14 00 00)
+        val pausedEvent = Xm6ProtocolV2.decodeFrame(
+            MdrFrame(MdrDataType.DATA_MDR, 0, byteArrayOf(0x69, 0x19, 0x00, 0x00, 0x01, 0x01, 0x14, 0x00, 0x00))
+        ) as Xm6Event.NoiseControlUpdate
+        assertTrue(pausedEvent.pausedOffHead)
+        assertEquals(NoiseControlMode.AMBIENT, pausedEvent.mode)
+        assertEquals(20, pausedEvent.ambientLevel)
+
         // Verified LIVE WH-1000XM6 DSEE status indicator (00=AVAILABLE, 01=RESTRICTED)
         val dseeAvail = Xm6ProtocolV2.decodeFrame(
             MdrFrame(MdrDataType.DATA_MDR, 0, byteArrayOf(0xE5.toByte(), 0x01, 0x00))

@@ -46,6 +46,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.xm6.app.data.AppThemeMode
@@ -190,19 +193,62 @@ private fun Xm6AppRoot(
     val presets by vm.allPresets.collectAsStateWithLifecycle()
     val logs by vm.logs.collectAsStateWithLifecycle()
     val bondedDevices by vm.bondedDevices.collectAsStateWithLifecycle()
+    val acoustic by vm.acousticSnapshot.collectAsStateWithLifecycle()
 
     var selectedTab by remember { mutableStateOf(MainTab.HOME) }
     var isCompanionAssociated by remember {
         mutableStateOf(CompanionAssociationHelper.isAssociated(context, prefs.boundMac))
     }
+    var hasAudioPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+    var isLifecycleStarted by remember { mutableStateOf(true) }
+    val lifecycleOwner = LocalLifecycleOwner.current
     val snackbarHostState = remember { SnackbarHostState() }
+
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        hasAudioPermission = granted
+        if (!granted) {
+            vm.notifyUser("需要音频权限以读取播放频谱（不录制麦克风）")
+        }
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> {
+                    isLifecycleStarted = true
+                    hasAudioPermission = ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.RECORD_AUDIO
+                    ) == PackageManager.PERMISSION_GRANTED
+                }
+                Lifecycle.Event.ON_STOP -> isLifecycleStarted = false
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            vm.setSpectrumActive(false)
+        }
+    }
+
+    LaunchedEffect(isLifecycleStarted, selectedTab, hasAudioPermission, state.isConnected) {
+        val shouldRun = isLifecycleStarted && selectedTab == MainTab.HOME && hasAudioPermission && state.isConnected
+        vm.setSpectrumActive(shouldRun)
+    }
 
     val btPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { grants ->
         val granted = grants[Manifest.permission.BLUETOOTH_CONNECT] == true
         if (granted) {
-            vm.connectAuto()
+            vm.syncWithSystemBluetooth()
         } else {
             vm.notifyUser("需要蓝牙权限才能连接 WH-1000XM6")
         }
@@ -219,14 +265,14 @@ private fun Xm6AppRoot(
         }
     }
 
-    // Request Android 12+ Bluetooth permission & auto-connect on startup
+    // Request Android 12+ Bluetooth permission & auto-sync with live OS Bluetooth on startup
     LaunchedEffect(Unit) {
         val hasConnect = ContextCompat.checkSelfPermission(
             context,
             Manifest.permission.BLUETOOTH_CONNECT
         ) == PackageManager.PERMISSION_GRANTED
         if (hasConnect) {
-            vm.connectAuto()
+            vm.syncWithSystemBluetooth()
         } else {
             btPermissionLauncher.launch(
                 arrayOf(
@@ -267,6 +313,12 @@ private fun Xm6AppRoot(
                 state = state,
                 prefs = prefs,
                 presets = presets,
+                acoustic = acoustic,
+                hasAudioPermission = hasAudioPermission,
+                onRequestAudioPermission = {
+                    audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                },
+                onResetSplPeak = vm::resetSoundPressurePeak,
                 onConnectClick = {
                     val hasConnect = ContextCompat.checkSelfPermission(
                         context,

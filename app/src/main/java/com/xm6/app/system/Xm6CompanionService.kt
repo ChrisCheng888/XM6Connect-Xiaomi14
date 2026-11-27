@@ -10,10 +10,10 @@ import android.content.Context
 import android.content.IntentSender
 import android.os.Build
 import com.xm6.app.Xm6Application
+import com.xm6.app.protocol.RfcommConnector
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.util.regex.Pattern
@@ -58,24 +58,26 @@ class Xm6CompanionService : CompanionDeviceService() {
         scope.launch {
             val prefs = app.preferencesStore.prefsFlow.first()
             val targetMac = mac ?: prefs.boundMac
-
-            // Allow A2DP negotiation to settle before pushing LDAC 990kbps preference
-            delay(1500L)
-            if (prefs.shizukuAutoLdac) {
-                app.shizukuManager.applyLdacBitrate(targetMac, prefs.ldacBitrateMode)
+            val device = targetMac?.let { RfcommConnector.findDeviceByMac(app, it) }
+            if (device != null) {
+                app.repository.onSystemBluetoothConnected(
+                    device = device,
+                    triggerAutoLdac = true,
+                    awaitInitialSync = true
+                )
+            } else {
+                app.repository.syncWithSystemBluetooth(
+                    reason = "companion_appeared",
+                    triggerAutoLdac = true
+                )
             }
-            // Refresh battery/codec snapshot & Glance desktop widget
-            app.repository.connectAuto()
-            delay(2500L)
-            Xm6GlanceWidget.updateAllWidgets(applicationContext)
         }
     }
 
     private fun handleDeviceDisappeared() {
         val app = application as? Xm6Application ?: return
         scope.launch {
-            app.repository.disconnect()
-            Xm6GlanceWidget.updateAllWidgets(applicationContext)
+            app.repository.onSystemBluetoothDisconnected(device = null)
         }
     }
 }

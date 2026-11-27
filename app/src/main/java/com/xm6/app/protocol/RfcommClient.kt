@@ -1,12 +1,17 @@
 package com.xm6.app.protocol
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothProfile
 import android.bluetooth.BluetoothSocket
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import android.util.Log
+import androidx.core.content.ContextCompat
 import java.io.IOException
 import java.util.UUID
 
@@ -40,18 +45,81 @@ object RfcommConnector {
     // Sony MDR Protocol V1 legacy UUID fallback
     val SONY_V1_UUID: UUID = UUID.fromString("96CC203E-5068-46AD-B32D-E316F5E069BA")
 
+    fun hasBluetoothConnectPermission(context: Context): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.BLUETOOTH_CONNECT
+            ) == PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
+    }
+
+    fun isBluetoothEnabled(context: Context): Boolean {
+        val manager = context.getSystemService(BluetoothManager::class.java) ?: return false
+        return manager.adapter?.isEnabled == true
+    }
+
+    @SuppressLint("MissingPermission")
+    fun isXm6DeviceName(name: String?): Boolean {
+        val n = name.orEmpty()
+        return n.contains("WH-1000XM6", ignoreCase = true) ||
+            n.contains("WH-1000X", ignoreCase = true) ||
+            n.contains("Sony", ignoreCase = true)
+    }
+
+    @SuppressLint("MissingPermission")
+    fun isMatchingTargetDevice(device: BluetoothDevice, boundMac: String?): Boolean {
+        if (!boundMac.isNullOrBlank()) {
+            return device.address.equals(boundMac, ignoreCase = true)
+        }
+        return isXm6DeviceName(runCatching { device.name }.getOrNull())
+    }
+
+    /**
+     * Checks whether the Bluetooth device currently has an active ACL/profile link at the Android OS level.
+     * Uses Android's BluetoothDevice.isConnected() (exempted via HiddenApiBypass) with profile fallback.
+     */
+    @SuppressLint("MissingPermission")
+    fun isDeviceSystemConnected(context: Context, device: BluetoothDevice): Boolean {
+        if (!hasBluetoothConnectPermission(context) || !isBluetoothEnabled(context)) return false
+        val direct = runCatching {
+            val m = BluetoothDevice::class.java.getMethod("isConnected")
+            m.invoke(device) as? Boolean
+        }.getOrNull()
+        if (direct != null) return direct
+
+        // Fallback: check if any classic audio profile is connected when reflection is unavailable
+        val adapter = context.getSystemService(BluetoothManager::class.java)?.adapter ?: return false
+        return adapter.getProfileConnectionState(BluetoothProfile.A2DP) == BluetoothProfile.STATE_CONNECTED ||
+            adapter.getProfileConnectionState(BluetoothProfile.HEADSET) == BluetoothProfile.STATE_CONNECTED
+    }
+
+    /**
+     * Returns the target WH-1000XM6 device ONLY if it is currently connected to Android Bluetooth.
+     */
+    @SuppressLint("MissingPermission")
+    fun findSystemConnectedXm6Device(context: Context, boundMac: String?): BluetoothDevice? {
+        if (!hasBluetoothConnectPermission(context) || !isBluetoothEnabled(context)) return null
+        if (!boundMac.isNullOrBlank()) {
+            val bound = findDeviceByMac(context, boundMac)
+            if (bound != null && isDeviceSystemConnected(context, bound)) {
+                return bound
+            }
+        }
+        val candidates = findBondedXm6Devices(context)
+        return candidates.firstOrNull { isXm6DeviceName(runCatching { it.name }.getOrNull()) && isDeviceSystemConnected(context, it) }
+    }
+
     @SuppressLint("MissingPermission")
     fun findBondedXm6Devices(context: Context): List<BluetoothDevice> {
+        if (!hasBluetoothConnectPermission(context)) return emptyList()
         val manager = context.getSystemService(BluetoothManager::class.java) ?: return emptyList()
         val adapter: BluetoothAdapter = manager.adapter ?: return emptyList()
         if (!adapter.isEnabled) return emptyList()
         val bonded = adapter.bondedDevices.orEmpty()
-        val xm6First = bonded.filter {
-            val name = it.name.orEmpty()
-            name.contains("WH-1000XM6", ignoreCase = true) ||
-                name.contains("WH-1000X", ignoreCase = true) ||
-                name.contains("Sony", ignoreCase = true)
-        }
+        val xm6First = bonded.filter { isXm6DeviceName(it.name) }
         return if (xm6First.isNotEmpty()) xm6First else bonded.toList()
     }
 

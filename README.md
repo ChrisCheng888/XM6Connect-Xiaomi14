@@ -7,8 +7,15 @@
 
 ## 核心特性
 
-- **原生零臃肿蓝牙直连（Sony MDR Protocol V2/V3）**
+- **原生零臃肿蓝牙直连与全自动实时同步（Sony MDR Protocol V2/V3）**
   - 直接通过 Classic Bluetooth RFCOMM（`956C7B26-D49A-4BA8-B03F-B17D393CB6E2`）连接耳机，实现 Table 1 (`0x0C`) + Table 2 (`0x0E`) 帧编解码与 ARQ 序列号确认。
+  - 内置静态 + 动态系统蓝牙广播监听（`ACL` / `A2DP` / `HFP` / `Adapter` / `BOOT_COMPLETED`）与断链自愈机制：耳机开机系统自连即自动拉起同步并锁 LDAC 990k，关机或关闭蓝牙瞬间同步离线，全程无需手动点连接。
+- **48 段实时频谱 + 实时声压监测（WHO 安全聆听）**
+  - 首页「设备状态」与「控噪」之间集成大尺寸高密度 **48 段锐角矩形频谱 + 重力悬停峰值块**（1024 点 FFT @ 20 Hz，低频分数 bin 插值防锯齿，深浅主题星云底纹）。
+  - 结合 AudioFlinger 实时 RMS 与蓝牙 A2DP 音量衰减曲线，同卡实时显示等效声压（`dB`）、本次峰值（点击清零）与绿/琥珀/红三段 WHO 安全区间；严格绑定首页前台生命周期，切后台立即释放零耗电。
+- **原生佩戴检测 + 三态 2×2 桌面小组件与 App 视图**
+  - 接入 WH-1000XM6 原生佩戴传感器（`F2 10` / `F3 10` / `F5 10`），实时区分 **「已连接（佩戴中）」/「未佩戴（暖琥珀待机）」/「未连接（哑光离线）」** 三套独立页面与材质，摘下耳机不误判控噪关闭。
+  - 支持「浅色 / 深色 / 随当地时间（07:00–19:00 浅色，19:00–07:00 深色）」主题切换；Jetpack Glance 2×2 桌面小组件与下拉快捷磁贴实时跟随 App 主题与三态变化。
 - **降噪 / 环境声全参数无损切换**
   - 降噪 / 环境声 / 关闭三段滑动切换；支持 1–20 档通透强度、关注语音、自动环境声与低/中/高灵敏度。
   - 已校准 WH-1000XM6 `0x19` 协议提交位（`ValueChangeStatus = 0x01`），跨模式切换完整保留通透强度、关注语音与自动环境声状态，不再重置。
@@ -16,14 +23,12 @@
   - 首页独立三段弹簧滑动胶囊（`标准 | 背景音乐 | 电影`），背景音乐展开 `房间 / 客厅 / 咖啡馆` 空间距离。
   - 采用单帧原子切模（`E8 04 00` / `E8 09 00 <room>`），消除「背景音乐 ↔ 电影」切换中间 1 秒退回标准听感的断层，并附带状态防抖保护。
 - **10 段图形均衡器（31Hz – 16kHz）**
-  - 完整适配 XM6 原生 10 段 EQ（`-6 dB ~ +6 dB`），首页提供实时曲线预览与大尺寸预设网格；**全部预设（含初始预设）均支持修改覆盖、另存为新、删除与一键恢复默认**。
+  - 完整适配 XM6 原生 10 段 EQ（`-6 dB ~ +6 dB`），首页以紧凑双列小波纹预设卡片呈现；**全部预设（含初始预设）均支持修改覆盖、另存为新、删除与一键恢复默认**。
 - **快捷功能与设备控制**
   - **DSEE Extreme**（含受空间音效限制时的「已暂停」实时状态同步）、**智能免摘**（含 `5s / 15s / 30s / 不关` 时长调节）、**触控面板**开关。
   - **多点连接**（读取已连接设备列表、一键切换播放设备/断开设备）、**佩戴暂停**、**自动关机**（适配 XM6 佩戴检测型 `摘下 / 关`）、**NC/AMB 按键循环模式**。
 - **Shizuku 免 Root 锁定 LDAC 990kbps**
-  - 通过 `ShizukuBinderWrapper` + `HiddenApiBypass` 直调系统 `IBluetoothA2dp`，一键或伴生连接自动锁定 `LDAC 990k / 660k / ABR`，实时回读当前系统音频编码与码率。
-- **2×2 桌面小组件 + 自适应主题**
-  - 支持「浅色 / 深色 / 随当地时间（07:00–19:00 浅色，19:00–07:00 深色）」主题切换；Jetpack Glance 2×2 桌面小组件实时跟随 App 主题色与耳机电量/编码/降噪状态，支持桌面直接切模式。
+  - 通过 `ShizukuBinderWrapper` + `HiddenApiBypass` 直调系统 `IBluetoothA2dp`，一键或耳机开机自连自动锁定 `LDAC 990k / 660k / ABR`，实时回读当前系统音频编码与码率。
 - **内置协议调试台**
   - 可在「音质 / 高阶 → 协议调试台」实时查看 TX/RX 十六进制帧日志、一键导出耳机 Table 1 / Table 2 能力表，并支持手动发送 Table 1 / Table 2 原始 Hex 帧以辅助其他机型逆向校准。
 
@@ -52,8 +57,9 @@
    - 若耳机或系统蓝牙已开启 LE Audio，蓝牙音频会工作在 LC3 而无法使用 LDAC。此时 App 首页顶部胶囊会提示 `LC3 · 切LDAC`，需先切回「LDAC 音质」再锁定 990k。
 4. **LDAC 990k 与多点连接带宽限制**
    - 同时开启双设备多点连接 + LDAC 990kbps 在强干扰环境下可能出现偶发卡顿，属蓝牙射频物理带宽限制；如遇断续可在「音质」页切换为 `660k` 或 `ABR`。
-5. **桌面小组件与主题同步**
-   - 2×2 桌面小组件严格跟随 **App 内设定的主题**（浅色 / 深色 / 随当地时间），不单纯跟随系统深色开关。若 HyperOS 桌面长时间未刷新小组件，请确认已关闭省电限制。
+5. **桌面小组件、三态同步与音频权限说明**
+   - 2×2 桌面小组件严格跟随 **App 内设定的主题**（浅色 / 深色 / 随当地时间），不单纯跟随系统深色开关。若 HyperOS 桌面长时间未刷新小组件，请确认已开启自启动与无限制省电策略，并在「设备」页完成一次「伴生唤醒绑定」以叠加系统级唤醒保障。
+   - 首页实时频谱使用 Android 全局播放混音接口 `Visualizer(0)`，按系统规范需授予 `RECORD_AUDIO` 权限（仅在前台首页读取播放音频 FFT，不录制麦克风，切页或退后台立即释放）。
 6. **固件版本变更与调试台风险提示**
    - 本项目的协议载荷基于 WH-1000XM6 固件 `3.1.5` 校准。Sony 后续固件更新若改动子类型或字节布局，可能需要重新校准。
    - 使用「协议调试台」发送原始 Hex 时请谨慎操作，切勿向耳机盲发未知写指令（尤其是 OTA / 复位相关命令族）。
@@ -73,6 +79,7 @@
 | DSEE Extreme 与生效状态 | T1 `E6/E8 01` & `E2/E5 01` | 开关：`E8 01 [00=关, 01=自动]`；实时状态：`E5 01 [00=生效, 01=受空间音效暂停]` |
 | 智能免摘 | T1 `F6/F8 0C` & `FA/FC 0C` | 开关：`F8 0C [00=开, 01=关] 01`（反向极性）；时长：`FC 0C 00 [00=5s, 01=15s, 02=30s, 03=不关]` |
 | 触控面板 | T1 `F6/F8 0F` | `F8 0F [00=关, 01=开]` |
+| 实时佩戴状态检测 | T1 `F2/F3/F5 10` | 主动查询 `F2 10` → 3 字节 `F3 10 [00=已佩戴, 01=未佩戴]`；异步推送 4 字节 `F5 10 01 [00=已佩戴, 01=未佩戴]`；摘下时固件另推送 `69 19 00 00 ...` 暂挂控噪 |
 | 自动关机（佩戴检测型） | T1 `26/27/28/29 05` | 能力表含 `0x25` 无 `0x24`：`28 05 10 00`=摘下关机，`28 05 11 00`=不自动关机 |
 | 多点连接与设备列表 | T2 `36/37/38/39 00..03` | `36 00` 读已连设备，`36/38 01` 多点总开关，`38 02/03` 切换/断开指定 MAC |
 
@@ -151,25 +158,29 @@
 app/src/main/java/com/xm6/app/
 ├── MainActivity.kt                  # 入口、权限申请、边缘沉浸栏与主题定时切换
 ├── Xm6Application.kt                # 全局单例（Repository / DataStore / Shizuku）
+├── audio/
+│   ├── SpectrumDsp.kt               # 48 段低频插值 FFT、重力峰值悬停与声压估算 DSP
+│   └── AudioSpectrumMonitor.kt      # 前台 Visualizer(0) 实时频谱与 RMS 采集器
 ├── data/
-│   ├── HeadphoneState.kt            # 耳机状态模型、默认 EQ 预设与能力判断
-│   ├── HeadphoneRepository.kt       # RFCOMM 会话管理、状态同步与防抖控制
+│   ├── HeadphoneState.kt            # 耳机三态模型、默认 EQ 预设与能力判断
+│   ├── HeadphoneRepository.kt       # RFCOMM 会话管理、自动重连自愈与防抖控制
 │   └── UserPreferencesStore.kt      # DataStore 持久化（绑定设备、LDAC、EQ 预设、主题）
 ├── protocol/
-│   ├── RfcommClient.kt              # Classic Bluetooth RFCOMM 连接与 UUID 回退
+│   ├── RfcommClient.kt              # Classic Bluetooth RFCOMM 连接、在线探测与 UUID 回退
 │   ├── MdrFrameCodec.kt             # 0x3E/0x3C 帧封装、0x3D 转义与校验和
 │   ├── ArqSession.kt                # 序列号 ACK 重传会话管理
-│   └── Xm6ProtocolV2.kt             # WH-1000XM6 Table 1 & Table 2 编解码器
+│   └── Xm6ProtocolV2.kt             # WH-1000XM6 Table 1 & Table 2 编解码器（含佩戴检测）
 ├── ldac/
 │   └── LdacShizukuManager.kt        # ShizukuBinderWrapper 免 Root 锁定 LDAC 码率
 ├── system/
+│   ├── BluetoothConnectionReceiver.kt # 静态 + 动态系统蓝牙连接/断开/开机监听
 │   ├── Xm6CompanionService.kt       # Android 12+ 伴生设备唤醒服务
-│   ├── Xm6GlanceWidget.kt           # 2×2 Jetpack Glance 桌面小组件
-│   ├── AncTileService.kt            # 系统下拉快捷开关磁贴
+│   ├── Xm6GlanceWidget.kt           # 2×2 三态 Jetpack Glance 桌面小组件
+│   ├── AncTileService.kt            # 系统下拉三态快捷开关磁贴
 │   └── ThemeScheduleReceiver.kt     # 07:00/19:00 主题边界闹钟广播
 └── ui/
-    ├── Xm6ViewModel.kt              # UI 状态与防抖调度
-    ├── home/HomeScreen.kt           # 首页（状态卡、降噪、聆听胶囊、快捷行、EQ 预设）
+    ├── Xm6ViewModel.kt              # UI 状态、频谱生命周期与防抖调度
+    ├── home/HomeScreen.kt           # 首页（三态顶卡、48 段频谱/声压、降噪、聆听胶囊、快捷行、EQ 预设）
     ├── eq/EqScreen.kt               # 10 段均衡器与预设管理
     ├── ldac/LdacAndDebugScreen.kt   # 音质/LDAC 锁定与协议调试台
     ├── device/DeviceSettingsScreen.kt # 多点连接、自动关机、外观主题与伴生绑定

@@ -5,6 +5,8 @@ import android.bluetooth.BluetoothDevice
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.xm6.app.Xm6Application
+import com.xm6.app.audio.AudioSpectrumMonitor
+import com.xm6.app.audio.LiveAcousticSnapshot
 import com.xm6.app.data.AppThemeMode
 import com.xm6.app.data.AutoAmbientSensitivity
 import com.xm6.app.data.AutoPowerOffOption
@@ -41,9 +43,11 @@ class Xm6ViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as Xm6Application
     private val repo = app.repository
     private val prefsStore = app.preferencesStore
+    private val spectrumMonitor = AudioSpectrumMonitor(app)
 
     val headphoneState: StateFlow<HeadphoneState> = repo.state
     val logs: StateFlow<List<ProtocolLogEntry>> = repo.logs
+    val acousticSnapshot: StateFlow<LiveAcousticSnapshot> = spectrumMonitor.snapshot
 
     val userPrefs: StateFlow<UserPrefs> = prefsStore.prefsFlow.stateIn(
         scope = viewModelScope,
@@ -75,7 +79,14 @@ class Xm6ViewModel(application: Application) : AndroidViewModel(application) {
     fun connectAuto() {
         viewModelScope.launch {
             refreshBondedDevices()
-            repo.connectAuto()
+            repo.connectAuto(userInitiated = true)
+        }
+    }
+
+    fun syncWithSystemBluetooth() {
+        viewModelScope.launch {
+            refreshBondedDevices()
+            repo.syncWithSystemBluetooth(reason = "ui_launch", triggerAutoLdac = false)
         }
     }
 
@@ -286,4 +297,17 @@ class Xm6ViewModel(application: Application) : AndroidViewModel(application) {
     fun clearLogs() = repo.clearLogs()
     fun buildCapabilityDumpText(): String = repo.buildCapabilityDumpText()
     fun notifyUser(msg: String) { _messages.tryEmit(msg) }
+
+    fun setSpectrumActive(active: Boolean) {
+        if (active) spectrumMonitor.start() else spectrumMonitor.stop()
+    }
+
+    fun resetSoundPressurePeak() {
+        spectrumMonitor.resetSessionPeak()
+    }
+
+    override fun onCleared() {
+        spectrumMonitor.stop()
+        super.onCleared()
+    }
 }

@@ -27,7 +27,8 @@ sealed interface Xm6Event {
         val ambientLevel: Int,
         val focusOnVoice: Boolean,
         val autoAmbientSound: Boolean? = null,
-        val autoAmbientSensitivity: AutoAmbientSensitivity? = null
+        val autoAmbientSensitivity: AutoAmbientSensitivity? = null,
+        val pausedOffHead: Boolean = false
     ) : Xm6Event
     data class AutoAmbientUpdate(
         val enabled: Boolean,
@@ -44,6 +45,7 @@ sealed interface Xm6Event {
     data class SpeakToChatConfigUpdate(val timeout: SpeakToChatTimeout) : Xm6Event
     data class TouchSensorUpdate(val enabled: Boolean) : Xm6Event
     data class WearingPauseUpdate(val enabled: Boolean) : Xm6Event
+    data class WearingStatusUpdate(val isWorn: Boolean) : Xm6Event
     data class AutoPowerOffUpdate(val option: AutoPowerOffOption) : Xm6Event
     data class NcButtonCycleUpdate(val cycle: NcAmbButtonCycle) : Xm6Event
     data class MultipointEnabledUpdate(val enabled: Boolean) : Xm6Event
@@ -182,6 +184,8 @@ object Xm6ProtocolV2 {
     private const val SYS_TYPE_SPEAK_TO_CHAT_XM6: Byte = 0x0C
     private const val SYS_TYPE_SPEAK_TO_CHAT_EXT: Byte = 0x0D
     private const val SYS_TYPE_TOUCH_SENSOR: Byte = 0x0F
+    // Verified LIVE on WH-1000XM6 FW 3.1.5: F2 10 -> F3/F5 10 01 [00=WORN, 01=NOT_WORN]
+    private const val SYS_TYPE_WEARING_STATUS: Byte = 0x10
 
     // Table 2 0x36/0x37/0x38/0x39 Peripheral / Multipoint (verified LIVE on XM6)
     private const val PERI_TYPE_CONNECTED_DEVICES: Byte = 0x00
@@ -281,6 +285,12 @@ object Xm6ProtocolV2 {
         MdrDataType.DATA_MDR,
         byteArrayOf(CMD_SYSTEM_GET_PARAM, SYS_TYPE_TOUCH_SENSOR),
         "GetTouchSensor(F6 0F)"
+    )
+
+    fun buildGetWearingStatus() = EncodedCommand(
+        MdrDataType.DATA_MDR,
+        byteArrayOf(CMD_SYSTEM_GET_STATUS, SYS_TYPE_WEARING_STATUS),
+        "GetWearingStatus(F2 10)"
     )
 
     fun buildGetMultipointEnabled() = EncodedCommand(
@@ -682,6 +692,7 @@ object Xm6ProtocolV2 {
                     // WH-1000XM6 native 0x19 dialect (9 bytes):
                     // [cmd, 0x19, flag, effect, ncAsmMode, focusVoice, level, autoAmb, autoSens]
                     p.size >= 7 && p[1] == NCASM_TYPE_XM6 -> {
+                        val flag = p[2].toInt() and 0xFF
                         val effect = (p[3].toInt() and 0xFF) != 0
                         val isAsm = (p[4].toInt() and 0xFF) == 0x01
                         val focusVoice = (p[5].toInt() and 0xFF) == 0x01
@@ -694,7 +705,13 @@ object Xm6ProtocolV2 {
                                 else -> AutoAmbientSensitivity.STANDARD
                             }
                         } else null
+                        // Verified LIVE: when taken off head, XM6 pauses NC/ASM temporarily:
+                        // - NTFY: 69 19 00 00 [savedMode] ...
+                        // - RET while off-head in Ambient: 67 19 01 00 01 [voice] [level] ...
+                        val pausedOffHead = (cmd == CMD_NCASM_NTFY_PARAM && flag == 0x00 && !effect) ||
+                            (cmd == CMD_NCASM_RET_PARAM && !effect && isAsm)
                         val mode = when {
+                            pausedOffHead -> if (isAsm) NoiseControlMode.AMBIENT else NoiseControlMode.ANC
                             !effect -> NoiseControlMode.OFF
                             isAsm -> NoiseControlMode.AMBIENT
                             else -> NoiseControlMode.ANC
@@ -704,7 +721,8 @@ object Xm6ProtocolV2 {
                             ambientLevel = level,
                             focusOnVoice = focusVoice,
                             autoAmbientSound = autoAmb,
-                            autoAmbientSensitivity = autoSens
+                            autoAmbientSensitivity = autoSens,
+                            pausedOffHead = pausedOffHead
                         )
                     }
 
@@ -784,6 +802,16 @@ object Xm6ProtocolV2 {
                         }
                         else -> null
                     }
+                } else null
+            }
+
+            CMD_SYSTEM_RET_STATUS, CMD_SYSTEM_NTFY_STATUS -> {
+                // Verified LIVE on WH-1000XM6 FW 3.1.5:
+                // - F2 10 -> F3 10 [00=WORN, 01=NOT_WORN] (3 bytes)
+                // - Unsolicited -> F5 10 01 [00=WORN, 01=NOT_WORN] (4 bytes)
+                if (p.size >= 3 && p[1] == SYS_TYPE_WEARING_STATUS) {
+                    val stateByte = (if (p.size >= 4) p[3] else p[2]).toInt() and 0xFF
+                    Xm6Event.WearingStatusUpdate(isWorn = (stateByte == 0x00))
                 } else null
             }
 

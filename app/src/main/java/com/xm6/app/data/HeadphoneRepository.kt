@@ -44,7 +44,11 @@ class HeadphoneRepository(
 
     private var session: ArqSession? = null
     private var frameCollectorJob: Job? = null
-    private var idleDisconnectJob: Job? = null
+    private var autoConnectJob: Job? = null
+    private var autoConnectTargetMac: String? = null
+    private var widgetBroadcastJob: Job? = null
+    private var lastAutoLdacAtMs: Long = 0L
+    private var lastTelemetryRefreshAtMs: Long = 0L
     private var isForeground: Boolean = false
     @Volatile
     private var verifiedV2: Boolean = false
@@ -69,37 +73,220 @@ class HeadphoneRepository(
 
     fun onAppForeground() {
         isForeground = true
-        idleDisconnectJob?.cancel()
         shizukuManager.refreshStatus()
+        scope.launch {
+            syncWithSystemBluetooth(reason = "foreground", triggerAutoLdac = false)
+        }
     }
 
     fun onAppBackground() {
         isForeground = false
-        scheduleIdleDisconnect()
-    }
-
-    private fun scheduleIdleDisconnect(delayMs: Long = 60_000L) {
-        idleDisconnectJob?.cancel()
-        idleDisconnectJob = scope.launch {
-            delay(delayMs)
-            if (!isForeground) {
-                enterIdleSleep()
-            }
-        }
+        // Keep the idle RFCOMM session alive while the headset remains connected over A2DP/ACL:
+        // zero active polling, real-time physical button & battery sync to the 2x2 desktop widget,
+        // and instant EOF disconnect detection when the headphones power off.
     }
 
     /**
-     * Releases the RFCOMM control socket after background inactivity to save battery,
-     * while preserving the last synced telemetry so the 2x2 desktop widget doesn't flash offline
-     * while the user is still wearing the headphones.
+     * Reconciles App & Widget state with the live Android Bluetooth stack:
+     * - If WH-1000XM6 is connected to Android Bluetooth, automatically establishes or refreshes RFCOMM.
+     * - If WH-1000XM6 is NOT connected to Android Bluetooth, clears any stale session and marks offline.
      */
-    private suspend fun enterIdleSleep() = connectMutex.withLock {
-        closeSessionInternal()
+    @SuppressLint("MissingPermission")
+    suspend fun syncWithSystemBluetooth(
+        reason: String,
+        triggerAutoLdac: Boolean = false
+    ): Boolean {
+        if (!RfcommConnector.hasBluetoothConnectPermission(context)) return false
+        if (!RfcommConnector.isBluetoothEnabled(context)) {
+            onBluetoothDisabled()
+            return false
+        }
+
+        val prefs = preferencesStore.prefsFlow.first()
+        val systemDevice = RfcommConnector.findSystemConnectedXm6Device(context, prefs.boundMac)
+        if (systemDevice == null) {
+            if (session != null || _state.value.connectionState != ConnectionState.DISCONNECTED) {
+                appendLog("SYS", "AutoSync($reason)", "System BT disconnected -> offline")
+                markDisconnectedInternal()
+            } else {
+                scheduleWidgetBroadcast(immediate = true)
+            }
+            return false
+        }
+
+        val alreadyLive = session != null &&
+            _state.value.isConnected &&
+            _state.value.macAddress.equals(systemDevice.address, ignoreCase = true)
+
+        if (alreadyLive) {
+            val now = System.currentTimeMillis()
+            if (now - lastTelemetryRefreshAtMs >= 3_000L) {
+                lastTelemetryRefreshAtMs = now
+                // Lightweight telemetry refresh on foreground / widget wake
+                sendInternal(Xm6ProtocolV2.buildGetBattery())
+                sendInternal(Xm6ProtocolV2.buildGetNoiseControl())
+                sendInternal(Xm6ProtocolV2.buildGetWearingStatus())
+                val sysCodec = shizukuManager.querySystemCodecSummary(systemDevice.address)
+                if (!sysCodec.isNullOrBlank() && !sysCodec.startsWith("ERR:")) {
+                    _state.update { it.copy(systemCodecSummary = sysCodec) }
+                }
+            }
+            if (triggerAutoLdac) {
+                maybeApplyAutoLdac(systemDevice.address)
+            }
+            scheduleWidgetBroadcast(immediate = true)
+            return true
+        }
+
+        appendLog("SYS", "AutoSync($reason)", "Detected connected ${systemDevice.name ?: systemDevice.address}")
+        return onSystemBluetoothConnected(
+            device = systemDevice,
+            triggerAutoLdac = triggerAutoLdac,
+            awaitInitialSync = true,
+            immediateFirstAttempt = (reason == "foreground" || reason == "app_create" || reason == "widget_update" || reason == "qs_tile")
+        )
+    }
+
+    /**
+     * Triggered automatically when Android Bluetooth connects the WH-1000XM6 (ACL / A2DP / HFP / Companion).
+     * Deduplicates concurrent OS broadcasts and retries smoothly while Sony's RFCOMM channel warms up.
+     */
+    @SuppressLint("MissingPermission")
+    suspend fun onSystemBluetoothConnected(
+        device: BluetoothDevice,
+        triggerAutoLdac: Boolean = true,
+        awaitInitialSync: Boolean = false,
+        immediateFirstAttempt: Boolean = false
+    ): Boolean {
+        if (!RfcommConnector.hasBluetoothConnectPermission(context)) return false
+        if (session != null && _state.value.isConnected && _state.value.macAddress.equals(device.address, ignoreCase = true)) {
+            if (triggerAutoLdac) {
+                maybeApplyAutoLdac(device.address)
+            }
+            scheduleWidgetBroadcast(immediate = true)
+            return true
+        }
+
+        val existingJob = autoConnectJob
+        if (existingJob != null && existingJob.isActive && autoConnectTargetMac.equals(device.address, ignoreCase = true)) {
+            if (awaitInitialSync) existingJob.join()
+            return _state.value.isConnected
+        }
+
+        autoConnectJob?.cancel()
+        autoConnectTargetMac = device.address
+        val displayName = runCatching { device.name }.getOrNull().orEmpty().ifBlank { "WH-1000XM6" }
+        _state.update {
+            it.copy(
+                connectionState = ConnectionState.CONNECTING,
+                errorMessage = null,
+                macAddress = device.address,
+                deviceName = displayName
+            )
+        }
+        scheduleWidgetBroadcast(immediate = true)
+
+        val retryDelays = if (immediateFirstAttempt) {
+            listOf(0L, 1200L, 2800L, 5000L)
+        } else {
+            listOf(650L, 1800L, 3500L, 6000L)
+        }
+
+        val job = scope.launch {
+            var connectedOk = false
+            for ((attemptIdx, waitMs) in retryDelays.withIndex()) {
+                if (waitMs > 0L) delay(waitMs)
+                if (!RfcommConnector.isDeviceSystemConnected(context, device)) {
+                    appendLog("SYS", "AutoConnect", "Aborted: device no longer connected to OS")
+                    markDisconnectedInternal()
+                    return@launch
+                }
+                if (session != null && _state.value.isConnected && _state.value.macAddress.equals(device.address, ignoreCase = true)) {
+                    connectedOk = true
+                    break
+                }
+                val isLast = (attemptIdx == retryDelays.lastIndex)
+                connectedOk = connect(device, showErrorOnFailure = isLast)
+                if (connectedOk) break
+            }
+
+            if (connectedOk && triggerAutoLdac) {
+                delay(900L)
+                maybeApplyAutoLdac(device.address)
+            } else if (!connectedOk && !RfcommConnector.isDeviceSystemConnected(context, device)) {
+                markDisconnectedInternal()
+            }
+        }
+        autoConnectJob = job
+        if (awaitInitialSync) {
+            job.join()
+        }
+        return _state.value.isConnected
     }
 
     @SuppressLint("MissingPermission")
-    suspend fun connectAuto(): Boolean {
+    suspend fun onSystemBluetoothDisconnected(device: BluetoothDevice?) {
+        val currentMac = _state.value.macAddress ?: preferencesStore.prefsFlow.first().boundMac
+        if (device != null && !currentMac.isNullOrBlank() && !device.address.equals(currentMac, ignoreCase = true)) {
+            return
+        }
+        appendLog("SYS", "SystemBT", "Headset disconnected (${device?.address ?: currentMac ?: "unknown"})")
+        markDisconnectedInternal()
+    }
+
+    suspend fun onBluetoothDisabled() {
+        appendLog("SYS", "SystemBT", "Bluetooth adapter turned OFF")
+        markDisconnectedInternal()
+    }
+
+    private suspend fun markDisconnectedInternal() {
+        autoConnectJob?.cancel()
+        autoConnectJob = null
+        autoConnectTargetMac = null
+        connectMutex.withLock {
+            closeSessionInternal()
+            _state.update {
+                it.copy(
+                    connectionState = ConnectionState.DISCONNECTED,
+                    errorMessage = null,
+                    isWorn = true
+                )
+            }
+        }
+        scheduleWidgetBroadcast(immediate = true)
+    }
+
+    private suspend fun maybeApplyAutoLdac(mac: String?) {
         val prefs = preferencesStore.prefsFlow.first()
+        if (!prefs.shizukuAutoLdac) return
+        val now = System.currentTimeMillis()
+        if (now - lastAutoLdacAtMs < 10_000L) return
+        if (shizukuManager.refreshStatus() != ShizukuStatus.READY) return
+        lastAutoLdacAtMs = now
+        applyShizukuLdac(prefs.ldacBitrateMode)
+    }
+
+    @SuppressLint("MissingPermission")
+    suspend fun connectAuto(userInitiated: Boolean = false): Boolean {
+        if (!RfcommConnector.hasBluetoothConnectPermission(context)) return false
+        if (!RfcommConnector.isBluetoothEnabled(context)) {
+            markDisconnectedInternal()
+            return false
+        }
+        val prefs = preferencesStore.prefsFlow.first()
+        val systemConnected = RfcommConnector.findSystemConnectedXm6Device(context, prefs.boundMac)
+        if (systemConnected != null) {
+            return onSystemBluetoothConnected(
+                device = systemConnected,
+                triggerAutoLdac = false,
+                awaitInitialSync = true,
+                immediateFirstAttempt = true
+            )
+        }
+        if (!userInitiated) {
+            markDisconnectedInternal()
+            return false
+        }
         val device = prefs.boundMac?.let { RfcommConnector.findDeviceByMac(context, it) }
             ?: RfcommConnector.findBondedXm6Devices(context).firstOrNull()
         if (device == null) {
@@ -109,13 +296,14 @@ class HeadphoneRepository(
                     errorMessage = "未找到已配对的 WH-1000XM6"
                 )
             }
+            scheduleWidgetBroadcast(immediate = true)
             return false
         }
-        return connect(device)
+        return connect(device, showErrorOnFailure = true)
     }
 
     @SuppressLint("MissingPermission")
-    suspend fun connect(device: BluetoothDevice): Boolean = connectMutex.withLock {
+    suspend fun connect(device: BluetoothDevice, showErrorOnFailure: Boolean = true): Boolean = connectMutex.withLock {
         if (session != null && _state.value.isConnected && _state.value.macAddress == device.address) {
             return@withLock true
         }
@@ -140,10 +328,20 @@ class HeadphoneRepository(
         } catch (t: Throwable) {
             appendLog("SYS", "RFCOMM Connect Failed", t.message ?: "IOException")
             _state.update {
-                it.copy(
-                    connectionState = ConnectionState.ERROR,
-                    errorMessage = "连接失败（请确认已关闭官方 Sound Connect）"
-                )
+                if (showErrorOnFailure) {
+                    it.copy(
+                        connectionState = ConnectionState.ERROR,
+                        errorMessage = "连接失败（请确认已关闭官方 Sound Connect）"
+                    )
+                } else {
+                    it.copy(
+                        connectionState = ConnectionState.CONNECTING,
+                        errorMessage = null
+                    )
+                }
+            }
+            if (showErrorOnFailure) {
+                scheduleWidgetBroadcast(immediate = true)
             }
             return@withLock false
         }
@@ -175,7 +373,8 @@ class HeadphoneRepository(
         }
 
         runHandshakeAndSync()
-        broadcastWidgetState()
+        lastTelemetryRefreshAtMs = System.currentTimeMillis()
+        scheduleWidgetBroadcast(immediate = true)
         true
     }
 
@@ -210,6 +409,7 @@ class HeadphoneRepository(
         sendInternal(Xm6ProtocolV2.buildGetSpeakToChatExt())
         sendInternal(Xm6ProtocolV2.buildGetTouchSensor())
         sendInternal(Xm6ProtocolV2.buildGetSystemParam(0x05, "WearingPause"))
+        sendInternal(Xm6ProtocolV2.buildGetWearingStatus())
         sendInternal(Xm6ProtocolV2.buildGetMultipointDevices())
         sendInternal(Xm6ProtocolV2.buildGetMultipointEnabled())
 
@@ -222,17 +422,34 @@ class HeadphoneRepository(
     }
 
     suspend fun disconnect() = connectMutex.withLock {
+        autoConnectJob?.cancel()
+        autoConnectJob = null
+        autoConnectTargetMac = null
         closeSessionInternal()
         _state.update { it.copy(connectionState = ConnectionState.DISCONNECTED, errorMessage = null) }
-        broadcastWidgetState()
+        scheduleWidgetBroadcast(immediate = true)
     }
 
-    private fun handleSessionDropped(err: Throwable?) {
+    private suspend fun handleSessionDropped(err: Throwable?) {
         if (session == null) return
         appendLog("SYS", "RFCOMM Disconnected", err?.message ?: "closed")
         closeSessionInternal()
-        _state.update { it.copy(connectionState = ConnectionState.DISCONNECTED) }
-        scope.launch { broadcastWidgetState() }
+
+        val prefs = preferencesStore.prefsFlow.first()
+        val stillConnected = RfcommConnector.findSystemConnectedXm6Device(context, _state.value.macAddress ?: prefs.boundMac)
+        if (stillConnected != null) {
+            // Headset is still connected to Android Bluetooth (transient RFCOMM drop) -> heal automatically!
+            appendLog("SYS", "AutoHeal", "OS Bluetooth still active -> reconnecting RFCOMM")
+            onSystemBluetoothConnected(
+                device = stillConnected,
+                triggerAutoLdac = false,
+                awaitInitialSync = false,
+                immediateFirstAttempt = false
+            )
+        } else {
+            _state.update { it.copy(connectionState = ConnectionState.DISCONNECTED, errorMessage = null) }
+            scheduleWidgetBroadcast(immediate = true)
+        }
     }
 
     private fun closeSessionInternal() {
@@ -436,7 +653,7 @@ class HeadphoneRepository(
             broadcastWidgetState()
         }
         if (session == null || !_state.value.isConnected) {
-            connectAuto()
+            connectAuto(userInitiated = true)
         }
         val current = _state.value
         if (current.isConnected) {
@@ -461,10 +678,7 @@ class HeadphoneRepository(
                     commitChange = true
                 )
             )
-            broadcastWidgetState()
-            if (!isForeground) {
-                scheduleIdleDisconnect(delayMs = 15_000L)
-            }
+            scheduleWidgetBroadcast(immediate = true)
         }
         return _state.value
     }
@@ -530,6 +744,7 @@ class HeadphoneRepository(
                 is Xm6Event.SpeakToChatConfigUpdate -> s.copy(speakToChatTimeout = event.timeout)
                 is Xm6Event.TouchSensorUpdate -> s.copy(touchSensor = event.enabled)
                 is Xm6Event.WearingPauseUpdate -> s.copy(pauseWhenTakenOff = event.enabled)
+                is Xm6Event.WearingStatusUpdate -> s.copy(isWorn = event.isWorn)
                 is Xm6Event.AutoPowerOffUpdate -> s.copy(autoPowerOff = event.option)
                 is Xm6Event.NcButtonCycleUpdate -> s.copy(ncAmbButtonCycle = event.cycle)
                 is Xm6Event.MultipointEnabledUpdate -> s.copy(multipointEnabled = event.enabled)
@@ -557,7 +772,8 @@ class HeadphoneRepository(
                 is Xm6Event.ListeningModeUpdate -> s.copy(listeningMode = event.mode, bgmRoom = event.bgmRoom)
             }
         }
-        scope.launch { broadcastWidgetState() }
+        val urgent = event is Xm6Event.WearingStatusUpdate || event is Xm6Event.NoiseControlUpdate || event is Xm6Event.BatteryUpdate
+        scheduleWidgetBroadcast(immediate = urgent)
     }
 
     private fun resolveGuardedListeningMode(
@@ -577,6 +793,14 @@ class HeadphoneRepository(
         pendingListeningMode = null
         pendingBgmRoom = null
         return resolvedMode to reportedRoom
+    }
+
+    private fun scheduleWidgetBroadcast(immediate: Boolean = false) {
+        widgetBroadcastJob?.cancel()
+        widgetBroadcastJob = scope.launch {
+            if (!immediate) delay(150L)
+            broadcastWidgetState()
+        }
     }
 
     private suspend fun broadcastWidgetState() {

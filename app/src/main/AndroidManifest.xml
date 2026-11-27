@@ -14,6 +14,10 @@
         android:name="android.permission.BLUETOOTH_SCAN"
         android:usesPermissionFlags="neverForLocation" />
 
+    <!-- Global playback output mix FFT & RMS metering via Visualizer(0) (foreground Home tab only) -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+
     <!-- CompanionDeviceManager background presence wake-up (HyperOS friendly) -->
     <uses-permission android:name="android.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND" />
     <uses-permission android:name="android.permission.REQUEST_COMPANION_USE_DATA_IN_BACKGROUND" />
@@ -87,6 +91,20 @@
             <meta-data
                 android:name="android.appwidget.provider"
                 android:resource="@xml/xm6_widget_info" />
+        </receiver>
+
+        <!-- Real-time system Bluetooth connect/disconnect monitor for zero-tap auto-sync -->
+        <receiver
+            android:name=".system.BluetoothConnectionReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED" />
+                <action android:name="android.bluetooth.headset.profile.action.CONNECTION_STATE_CHANGED" />
+                <action android:name="android.bluetooth.device.action.ACL_CONNECTED" />
+                <action android:name="android.bluetooth.device.action.ACL_DISCONNECTED" />
+                <action android:name="android.bluetooth.adapter.action.STATE_CHANGED" />
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
         </receiver>
 
         <!-- Automatic local-time day/night widget theme boundary scheduler -->
